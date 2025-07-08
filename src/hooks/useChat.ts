@@ -37,7 +37,7 @@ export const useChat = () => {
       
       setCurrentParticipant(participant);
       
-      // Look for existing waiting participant
+      // Look for existing waiting participant with correct gender matching
       const { data: waitingParticipants, error: searchError } = await supabase
         .from('participants')
         .select('*')
@@ -83,11 +83,14 @@ export const useChat = () => {
           description: `You're now chatting with ${waitingPartner.name}`,
         });
       } else {
-        // No match found, wait for someone
+        // No match found, start looking for new participants
         toast({
           title: "Searching...",
           description: "Looking for someone to chat with",
         });
+        
+        // Set up a listener for new participants
+        startListeningForMatches(participant, chatType);
       }
     } catch (error) {
       console.error('Error starting chat:', error);
@@ -98,6 +101,11 @@ export const useChat = () => {
         variant: "destructive",
       });
     }
+  }, []);
+
+  // Function to listen for new participants when no match is found
+  const startListeningForMatches = useCallback(async (participant: Participant, chatType: ChatType) => {
+    // This will be handled by the real-time subscription below
   }, []);
 
   // Send a message
@@ -206,11 +214,70 @@ export const useChat = () => {
     }
   }, [currentSession, currentParticipant]);
 
-  // Set up real-time subscriptions
+  // Set up real-time subscriptions for matching
   useEffect(() => {
-    if (!currentParticipant) return;
+    if (!currentParticipant || !currentParticipant.is_waiting) return;
 
-    const participantChannel = supabase
+    // Listen for new participants who might be a match
+    const newParticipantChannel = supabase
+      .channel('new-participants')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'participants',
+        filter: `is_waiting=eq.true`
+      }, async (payload) => {
+        const newParticipant = payload.new as Participant;
+        
+        // Skip if it's our own participant
+        if (newParticipant.id === currentParticipant.id) return;
+        
+        // Check if this new participant is compatible
+        const isCompatible = (
+          (newParticipant.preferred_gender === 'any' || newParticipant.preferred_gender === currentParticipant.gender) &&
+          (currentParticipant.preferred_gender === 'any' || currentParticipant.preferred_gender === newParticipant.gender)
+        );
+        
+        if (isCompatible && !currentSession) {
+          // Create a match!
+          try {
+            const { data: session, error: sessionError } = await supabase
+              .from('chat_sessions')
+              .insert({
+                session_type: 'text', // Default to text for now
+                status: 'matched'
+              })
+              .select()
+              .single();
+
+            if (sessionError) throw sessionError;
+
+            // Update both participants
+            await supabase
+              .from('participants')
+              .update({ 
+                session_id: session.id, 
+                is_waiting: false 
+              })
+              .in('id', [currentParticipant.id, newParticipant.id]);
+
+            setCurrentSession(session);
+            setPartner(newParticipant);
+            setIsConnected(true);
+            setIsSearching(false);
+            
+            toast({
+              title: "Connected!",
+              description: `You're now chatting with ${newParticipant.name}`,
+            });
+          } catch (error) {
+            console.error('Error creating match:', error);
+          }
+        }
+      })
+      .subscribe();
+
+    const participantUpdateChannel = supabase
       .channel('participant-updates')
       .on('postgres_changes', {
         event: 'UPDATE',
@@ -253,7 +320,8 @@ export const useChat = () => {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(participantChannel);
+      supabase.removeChannel(newParticipantChannel);
+      supabase.removeChannel(participantUpdateChannel);
     };
   }, [currentParticipant, currentSession]);
 

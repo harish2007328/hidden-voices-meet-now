@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Send, SkipForward, X, Loader2, Users } from 'lucide-react';
+import { Send, SkipForward, X, Loader2, Users, Wifi, WifiOff } from 'lucide-react';
 import { Message, Participant, ChatSession } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
@@ -33,6 +33,7 @@ export const ChatRoom = ({
   const [messageInput, setMessageInput] = useState('');
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [lastMessageTime, setLastMessageTime] = useState<Date | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -51,9 +52,19 @@ export const ChatRoom = ({
     }
   }, [isConnected]);
 
+  // Track last message time for delivery status
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage.participant_id === currentParticipant?.id) {
+        setLastMessageTime(new Date(lastMessage.sent_at));
+      }
+    }
+  }, [messages, currentParticipant]);
+
   const handleSendMessage = () => {
     const trimmedMessage = messageInput.trim();
-    if (trimmedMessage && isConnected) {
+    if (trimmedMessage && isConnected && trimmedMessage.length <= 500) {
       onSendMessage(trimmedMessage);
       setMessageInput('');
       setIsTyping(false);
@@ -68,8 +79,11 @@ export const ChatRoom = ({
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setMessageInput(e.target.value);
-    setIsTyping(e.target.value.length > 0);
+    const value = e.target.value;
+    if (value.length <= 500) {
+      setMessageInput(value);
+      setIsTyping(value.length > 0);
+    }
   };
 
   const handleSkip = () => {
@@ -88,21 +102,21 @@ export const ChatRoom = ({
     if (isSearching) {
       return {
         icon: <Loader2 className="w-4 h-4 animate-spin" />,
-        text: "Searching for someone...",
+        text: "Searching for someone online...",
         color: "text-yellow-300"
       };
     }
     
     if (isConnected && partner) {
       return {
-        icon: <Users className="w-4 h-4" />,
-        text: `Chatting with ${partner.name}`,
+        icon: <Wifi className="w-4 h-4" />,
+        text: `Connected with ${partner.name}`,
         color: "text-green-300"
       };
     }
     
     return {
-      icon: <X className="w-4 h-4" />,
+      icon: <WifiOff className="w-4 h-4" />,
       text: "Not connected",
       color: "text-red-300"
     };
@@ -156,17 +170,20 @@ export const ChatRoom = ({
               {isSearching ? (
                 <div className="text-white/80">
                   <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
-                  <p>Looking for someone to chat with...</p>
+                  <p>Looking for someone online to chat with...</p>
                   <p className="text-sm text-white/60 mt-1">
                     {currentParticipant && (
                       <>Searching as {currentParticipant.name} ({currentParticipant.gender}) for {currentParticipant.preferred_gender === 'any' ? 'anyone' : `${currentParticipant.preferred_gender}s`}</>
                     )}
                   </p>
+                  <div className="mt-2 text-xs text-white/50">
+                    💡 Only online users will be matched
+                  </div>
                 </div>
               ) : isConnected && partner ? (
                 <div className="text-white/80">
                   <div className="flex items-center justify-center gap-2 mb-1">
-                    <Users className="w-5 h-5 text-green-400" />
+                    <Wifi className="w-5 h-5 text-green-400" />
                     <span>Connected with <span className="font-semibold text-white">{partner.name}</span></span>
                   </div>
                   <p className="text-sm text-white/60">
@@ -176,7 +193,7 @@ export const ChatRoom = ({
                 </div>
               ) : (
                 <div className="text-white/80">
-                  <X className="w-6 h-6 mx-auto mb-2 text-red-400" />
+                  <WifiOff className="w-6 h-6 mx-auto mb-2 text-red-400" />
                   Waiting to connect...
                 </div>
               )}
@@ -194,8 +211,10 @@ export const ChatRoom = ({
                   </div>
                 </div>
               ) : (
-                messages.map((message) => {
+                messages.map((message, index) => {
                   const isOwnMessage = message.participant_id === currentParticipant?.id;
+                  const isLastMessage = index === messages.length - 1;
+                  
                   return (
                     <div
                       key={message.id}
@@ -214,10 +233,13 @@ export const ChatRoom = ({
                       >
                         <div className="whitespace-pre-wrap">{message.content}</div>
                         <div className={cn(
-                          "text-xs mt-1 opacity-70",
+                          "text-xs mt-1 opacity-70 flex items-center justify-between",
                           isOwnMessage ? "text-blue-100" : "text-white/60"
                         )}>
-                          {formatTime(message.sent_at)}
+                          <span>{formatTime(message.sent_at)}</span>
+                          {isOwnMessage && isLastMessage && (
+                            <span className="ml-2">✓</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -239,20 +261,19 @@ export const ChatRoom = ({
                     isConnected 
                       ? "Type a message..." 
                       : isSearching 
-                        ? "Searching for someone to chat with..." 
+                        ? "Searching for someone online..." 
                         : "Waiting to connect..."
                   }
                   disabled={!isConnected}
                   className="bg-white/20 border-white/30 text-white placeholder:text-white/60 focus:bg-white/25"
-                  maxLength={500}
                 />
                 <Button 
                   onClick={handleSendMessage}
-                  disabled={!messageInput.trim() || !isConnected}
+                  disabled={!messageInput.trim() || !isConnected || messageInput.length > 500}
                   size="icon"
                   className={cn(
                     "transition-all duration-200",
-                    messageInput.trim() && isConnected
+                    messageInput.trim() && isConnected && messageInput.length <= 500
                       ? "bg-blue-600 hover:bg-blue-700 scale-100"
                       : "bg-gray-600 scale-95"
                   )}
@@ -261,12 +282,24 @@ export const ChatRoom = ({
                 </Button>
               </div>
               
-              {/* Character count */}
-              {messageInput.length > 400 && (
-                <div className="text-xs text-white/60 mt-1 text-right">
-                  {messageInput.length}/500
+              {/* Character count and status */}
+              <div className="flex justify-between items-center mt-1 text-xs">
+                <div className="text-white/50">
+                  {isConnected && partner && (
+                    <span className="flex items-center gap-1">
+                      <Wifi className="w-3 h-3" />
+                      Connected
+                    </span>
+                  )}
                 </div>
-              )}
+                <div className={cn(
+                  "text-white/60",
+                  messageInput.length > 450 && "text-yellow-300",
+                  messageInput.length > 480 && "text-red-300"
+                )}>
+                  {messageInput.length > 400 && `${messageInput.length}/500`}
+                </div>
+              </div>
             </div>
           </CardContent>
         </Card>

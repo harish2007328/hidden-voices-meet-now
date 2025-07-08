@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Send, SkipForward, X, Loader2 } from 'lucide-react';
+import { Send, SkipForward, X, Loader2, Users } from 'lucide-react';
 import { Message, Participant, ChatSession } from '@/types/chat';
 import { cn } from '@/lib/utils';
 
@@ -32,7 +32,9 @@ export const ChatRoom = ({
 }: ChatRoomProps) => {
   const [messageInput, setMessageInput] = useState('');
   const [showSkipDialog, setShowSkipDialog] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -42,10 +44,19 @@ export const ChatRoom = ({
     scrollToBottom();
   }, [messages]);
 
+  // Focus input when connected
+  useEffect(() => {
+    if (isConnected && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isConnected]);
+
   const handleSendMessage = () => {
-    if (messageInput.trim() && isConnected) {
-      onSendMessage(messageInput.trim());
+    const trimmedMessage = messageInput.trim();
+    if (trimmedMessage && isConnected) {
+      onSendMessage(trimmedMessage);
       setMessageInput('');
+      setIsTyping(false);
     }
   };
 
@@ -54,6 +65,11 @@ export const ChatRoom = ({
       e.preventDefault();
       handleSendMessage();
     }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessageInput(e.target.value);
+    setIsTyping(e.target.value.length > 0);
   };
 
   const handleSkip = () => {
@@ -68,6 +84,32 @@ export const ChatRoom = ({
     });
   };
 
+  const getConnectionStatus = () => {
+    if (isSearching) {
+      return {
+        icon: <Loader2 className="w-4 h-4 animate-spin" />,
+        text: "Searching for someone...",
+        color: "text-yellow-300"
+      };
+    }
+    
+    if (isConnected && partner) {
+      return {
+        icon: <Users className="w-4 h-4" />,
+        text: `Chatting with ${partner.name}`,
+        color: "text-green-300"
+      };
+    }
+    
+    return {
+      icon: <X className="w-4 h-4" />,
+      text: "Not connected",
+      color: "text-red-300"
+    };
+  };
+
+  const status = getConnectionStatus();
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex flex-col">
       {/* Header */}
@@ -75,17 +117,9 @@ export const ChatRoom = ({
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-white font-bold text-lg">nobodyknowsyou</h1>
-            <div className="text-white/60 text-sm">
-              {isSearching ? (
-                <div className="flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Searching for someone...
-                </div>
-              ) : isConnected && partner ? (
-                `Chatting with ${partner.name}`
-              ) : (
-                'Not connected'
-              )}
+            <div className={cn("text-sm flex items-center gap-2", status.color)}>
+              {status.icon}
+              {status.text}
             </div>
           </div>
           
@@ -122,14 +156,29 @@ export const ChatRoom = ({
               {isSearching ? (
                 <div className="text-white/80">
                   <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
-                  Looking for someone to chat with...
+                  <p>Looking for someone to chat with...</p>
+                  <p className="text-sm text-white/60 mt-1">
+                    {currentParticipant && (
+                      <>Searching as {currentParticipant.name} ({currentParticipant.gender}) for {currentParticipant.preferred_gender === 'any' ? 'anyone' : `${currentParticipant.preferred_gender}s`}</>
+                    )}
+                  </p>
                 </div>
               ) : isConnected && partner ? (
                 <div className="text-white/80">
-                  Connected with <span className="font-semibold text-white">{partner.name}</span>
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <Users className="w-5 h-5 text-green-400" />
+                    <span>Connected with <span className="font-semibold text-white">{partner.name}</span></span>
+                  </div>
+                  <p className="text-sm text-white/60">
+                    {partner.gender !== 'any' && `${partner.gender.charAt(0).toUpperCase() + partner.gender.slice(1)} • `}
+                    Say hello and start chatting!
+                  </p>
                 </div>
               ) : (
-                <div className="text-white/80">Waiting to connect...</div>
+                <div className="text-white/80">
+                  <X className="w-6 h-6 mx-auto mb-2 text-red-400" />
+                  Waiting to connect...
+                </div>
               )}
             </div>
           </CardHeader>
@@ -139,7 +188,10 @@ export const ChatRoom = ({
             <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-96 md:max-h-[500px]">
               {messages.length === 0 && isConnected ? (
                 <div className="text-center text-white/60 py-8">
-                  Start the conversation! Say hello 👋
+                  <div className="bg-white/10 rounded-lg p-4 max-w-sm mx-auto">
+                    <p className="mb-2">🎉 You're connected!</p>
+                    <p className="text-sm">Start the conversation by saying hello or asking a question.</p>
+                  </div>
                 </div>
               ) : (
                 messages.map((message) => {
@@ -148,21 +200,21 @@ export const ChatRoom = ({
                     <div
                       key={message.id}
                       className={cn(
-                        "flex",
+                        "flex animate-in slide-in-from-bottom-2 duration-300",
                         isOwnMessage ? "justify-end" : "justify-start"
                       )}
                     >
                       <div
                         className={cn(
-                          "max-w-xs md:max-w-sm px-3 py-2 rounded-lg text-sm",
+                          "max-w-xs md:max-w-sm px-3 py-2 rounded-lg text-sm break-words",
                           isOwnMessage
-                            ? "bg-blue-600 text-white"
-                            : "bg-white/20 text-white"
+                            ? "bg-blue-600 text-white rounded-br-sm"
+                            : "bg-white/20 text-white rounded-bl-sm"
                         )}
                       >
-                        <div>{message.content}</div>
+                        <div className="whitespace-pre-wrap">{message.content}</div>
                         <div className={cn(
-                          "text-xs mt-1",
+                          "text-xs mt-1 opacity-70",
                           isOwnMessage ? "text-blue-100" : "text-white/60"
                         )}>
                           {formatTime(message.sent_at)}
@@ -179,23 +231,42 @@ export const ChatRoom = ({
             <div className="p-4 border-t border-white/10">
               <div className="flex gap-2">
                 <Input
+                  ref={inputRef}
                   value={messageInput}
-                  onChange={(e) => setMessageInput(e.target.value)}
+                  onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
-                  placeholder={isConnected ? "Type a message..." : "Waiting to connect..."}
+                  placeholder={
+                    isConnected 
+                      ? "Type a message..." 
+                      : isSearching 
+                        ? "Searching for someone to chat with..." 
+                        : "Waiting to connect..."
+                  }
                   disabled={!isConnected}
-                  className="bg-white/20 border-white/30 text-white placeholder:text-white/60"
+                  className="bg-white/20 border-white/30 text-white placeholder:text-white/60 focus:bg-white/25"
                   maxLength={500}
                 />
                 <Button 
                   onClick={handleSendMessage}
                   disabled={!messageInput.trim() || !isConnected}
                   size="icon"
-                  className="bg-blue-600 hover:bg-blue-700"
+                  className={cn(
+                    "transition-all duration-200",
+                    messageInput.trim() && isConnected
+                      ? "bg-blue-600 hover:bg-blue-700 scale-100"
+                      : "bg-gray-600 scale-95"
+                  )}
                 >
                   <Send className="w-4 h-4" />
                 </Button>
               </div>
+              
+              {/* Character count */}
+              {messageInput.length > 400 && (
+                <div className="text-xs text-white/60 mt-1 text-right">
+                  {messageInput.length}/500
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -208,6 +279,7 @@ export const ChatRoom = ({
             <DialogTitle className="text-white">Skip this chat?</DialogTitle>
             <DialogDescription className="text-gray-300">
               Are you sure you want to skip this conversation and find someone new to chat with?
+              {partner && ` You'll leave your chat with ${partner.name}.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

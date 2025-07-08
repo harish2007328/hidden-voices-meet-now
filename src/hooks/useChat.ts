@@ -11,6 +11,94 @@ export const useChat = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
+  // Improved matching logic
+  const findCompatiblePartner = useCallback(async (
+    participant: Participant,
+    chatType: ChatType
+  ): Promise<Participant | null> => {
+    try {
+      // Build gender compatibility filter
+      let genderFilter = '';
+      if (participant.preferred_gender === 'any') {
+        genderFilter = 'gender.in.(male,female,any)';
+      } else {
+        genderFilter = `gender.in.(${participant.preferred_gender},any)`;
+      }
+
+      // Find compatible waiting participants
+      const { data: compatibleParticipants, error } = await supabase
+        .from('participants')
+        .select('*')
+        .eq('is_waiting', true)
+        .neq('id', participant.id)
+        .or(genderFilter)
+        .order('joined_at', { ascending: true }) // First come, first served
+        .limit(10);
+
+      if (error) throw error;
+
+      if (!compatibleParticipants || compatibleParticipants.length === 0) {
+        return null;
+      }
+
+      // Filter for mutual compatibility
+      const mutuallyCompatible = compatibleParticipants.filter(partner => {
+        const partnerWantsMe = partner.preferred_gender === 'any' || partner.preferred_gender === participant.gender;
+        const iWantPartner = participant.preferred_gender === 'any' || participant.preferred_gender === partner.gender;
+        return partnerWantsMe && iWantPartner;
+      });
+
+      return mutuallyCompatible.length > 0 ? mutuallyCompatible[0] : null;
+    } catch (error) {
+      console.error('Error finding compatible partner:', error);
+      return null;
+    }
+  }, []);
+
+  // Create a matched session
+  const createMatchedSession = useCallback(async (
+    participant1: Participant,
+    participant2: Participant,
+    chatType: ChatType
+  ): Promise<ChatSession | null> => {
+    try {
+      // Use a transaction-like approach to ensure atomicity
+      const { data: session, error: sessionError } = await supabase
+        .from('chat_sessions')
+        .insert({
+          session_type: chatType,
+          status: 'matched'
+        })
+        .select()
+        .single();
+
+      if (sessionError) throw sessionError;
+
+      // Update both participants atomically
+      const { error: updateError } = await supabase
+        .from('participants')
+        .update({ 
+          session_id: session.id, 
+          is_waiting: false 
+        })
+        .in('id', [participant1.id, participant2.id]);
+
+      if (updateError) {
+        // Rollback session creation if participant update fails
+        await supabase
+          .from('chat_sessions')
+          .delete()
+          .eq('id', session.id);
+        throw updateError;
+      }
+
+      return session;
+    } catch (error) {
+      console.error('Error creating matched session:', error);
+      return null;
+    }
+  }, []);
+
   // Start looking for a chat partner
   const startChat = useCallback(async (
     name: string, 
@@ -37,80 +125,47 @@ export const useChat = () => {
       
       setCurrentParticipant(participant);
       
-      // Look for existing waiting participant with correct gender matching
-      const { data: waitingParticipants, error: searchError } = await supabase
-        .from('participants')
-        .select('*')
-        .eq('is_waiting', true)
-        .neq('id', participant.id)
-        .or(`preferred_gender.eq.any,preferred_gender.eq.${gender}`)
-        .or(`gender.eq.any,gender.eq.${preferredGender}`)
-        .limit(1);
+      // Look for compatible partner
+      const compatiblePartner = await findCompatiblePartner(participant, chatType);
 
-      if (searchError) throw searchError;
-
-      if (waitingParticipants && waitingParticipants.length > 0) {
-        // Found a match, create session
-        const waitingPartner = waitingParticipants[0];
+      if (compatiblePartner) {
+        // Create matched session
+        const session = await createMatchedSession(participant, compatiblePartner, chatType);
         
-        const { data: session, error: sessionError } = await supabase
-          .from('chat_sessions')
-          .insert({
-            session_type: chatType,
-            status: 'matched'
-          })
-          .select()
-          .single();
-
-        if (sessionError) throw sessionError;
-
-        // Update both participants
-        await supabase
-          .from('participants')
-          .update({ 
-            session_id: session.id, 
-            is_waiting: false 
-          })
-          .in('id', [participant.id, waitingPartner.id]);
-
-        setCurrentSession(session);
-        setPartner(waitingPartner);
-        setIsConnected(true);
-        setIsSearching(false);
-        
-        toast({
-          title: "Connected!",
-          description: `You're now chatting with ${waitingPartner.name}`,
-        });
+        if (session) {
+          setCurrentSession(session);
+          setPartner(compatiblePartner);
+          setIsConnected(true);
+          setIsSearching(false);
+          
+          toast({
+            title: "Connected!",
+            description: `You're now chatting with ${compatiblePartner.name}`,
+          });
+        } else {
+          throw new Error('Failed to create session');
+        }
       } else {
-        // No match found, start looking for new participants
+        // No match found, wait for new participants
         toast({
           title: "Searching...",
           description: "Looking for someone to chat with",
         });
-        
-        // Set up a listener for new participants
-        startListeningForMatches(participant, chatType);
       }
     } catch (error) {
       console.error('Error starting chat:', error);
       setIsSearching(false);
       toast({
         title: "Error",
-        description: "Failed to start chat",
+        description: "Failed to start chat. Please try again.",
         variant: "destructive",
       });
     }
-  }, []);
+  }, [findCompatiblePartner, createMatchedSession]);
 
-  // Function to listen for new participants when no match is found
-  const startListeningForMatches = useCallback(async (participant: Participant, chatType: ChatType) => {
-    // This will be handled by the real-time subscription below
-  }, []);
-
-  // Send a message
+  // Send a message with better error handling
   const sendMessage = useCallback(async (content: string) => {
-    if (!currentSession || !currentParticipant) return;
+    if (!currentSession || !currentParticipant || !content.trim()) return;
 
     try {
       const { error } = await supabase
@@ -118,21 +173,21 @@ export const useChat = () => {
         .insert({
           session_id: currentSession.id,
           participant_id: currentParticipant.id,
-          content
+          content: content.trim()
         });
 
       if (error) throw error;
     } catch (error) {
       console.error('Error sending message:', error);
       toast({
-        title: "Error",
-        description: "Failed to send message",
+        title: "Message failed",
+        description: "Your message couldn't be sent. Please try again.",
         variant: "destructive",
       });
     }
   }, [currentSession, currentParticipant]);
 
-  // Skip to next person
+  // Skip to next person with improved logic
   const skipChat = useCallback(async () => {
     if (!currentSession || !currentParticipant) return;
 
@@ -143,34 +198,52 @@ export const useChat = () => {
         .update({ status: 'ended', ended_at: new Date().toISOString() })
         .eq('id', currentSession.id);
 
-      // Reset participant to waiting
-      await supabase
+      // Update current participant to waiting status
+      const { data: updatedParticipant, error: updateError } = await supabase
         .from('participants')
         .update({ 
           session_id: null, 
           is_waiting: true,
-          left_at: new Date().toISOString()
+          left_at: null // Reset left_at when starting new search
         })
-        .eq('id', currentParticipant.id);
+        .eq('id', currentParticipant.id)
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
 
       // Reset state
       setCurrentSession(null);
       setPartner(null);
       setMessages([]);
       setIsConnected(false);
+      setIsSearching(true);
       
-      // Start searching again
-      if (currentParticipant) {
-        setIsSearching(true);
-        // Look for new match
-        setTimeout(() => {
-          startChat(
-            currentParticipant.name,
-            currentParticipant.gender,
-            currentParticipant.preferred_gender,
-            'text' // Default to text for now
-          );
-        }, 1000);
+      // Update current participant state
+      setCurrentParticipant(updatedParticipant);
+
+      toast({
+        title: "Skipped",
+        description: "Looking for a new chat partner...",
+      });
+
+      // Look for new match immediately
+      const compatiblePartner = await findCompatiblePartner(updatedParticipant, 'text');
+      
+      if (compatiblePartner) {
+        const session = await createMatchedSession(updatedParticipant, compatiblePartner, 'text');
+        
+        if (session) {
+          setCurrentSession(session);
+          setPartner(compatiblePartner);
+          setIsConnected(true);
+          setIsSearching(false);
+          
+          toast({
+            title: "New connection!",
+            description: `You're now chatting with ${compatiblePartner.name}`,
+          });
+        }
       }
     } catch (error) {
       console.error('Error skipping chat:', error);
@@ -180,13 +253,14 @@ export const useChat = () => {
         variant: "destructive",
       });
     }
-  }, [currentSession, currentParticipant, startChat]);
+  }, [currentSession, currentParticipant, findCompatiblePartner, createMatchedSession]);
 
-  // Stop chat completely
+  // Stop chat completely with cleanup
   const stopChat = useCallback(async () => {
     if (!currentParticipant) return;
 
     try {
+      // End current session if exists
       if (currentSession) {
         await supabase
           .from('chat_sessions')
@@ -194,6 +268,7 @@ export const useChat = () => {
           .eq('id', currentSession.id);
       }
 
+      // Mark participant as no longer waiting and set left time
       await supabase
         .from('participants')
         .update({ 
@@ -214,13 +289,13 @@ export const useChat = () => {
     }
   }, [currentSession, currentParticipant]);
 
-  // Set up real-time subscriptions for matching
+  // Enhanced real-time subscriptions
   useEffect(() => {
-    if (!currentParticipant || !currentParticipant.is_waiting) return;
+    if (!currentParticipant || !currentParticipant.is_waiting || isConnected) return;
 
     // Listen for new participants who might be a match
-    const newParticipantChannel = supabase
-      .channel('new-participants')
+    const participantChannel = supabase
+      .channel('participant-matching')
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
@@ -232,35 +307,15 @@ export const useChat = () => {
         // Skip if it's our own participant
         if (newParticipant.id === currentParticipant.id) return;
         
-        // Check if this new participant is compatible
-        const isCompatible = (
-          (newParticipant.preferred_gender === 'any' || newParticipant.preferred_gender === currentParticipant.gender) &&
-          (currentParticipant.preferred_gender === 'any' || currentParticipant.preferred_gender === newParticipant.gender)
-        );
+        // Check mutual compatibility
+        const partnerWantsMe = newParticipant.preferred_gender === 'any' || newParticipant.preferred_gender === currentParticipant.gender;
+        const iWantPartner = currentParticipant.preferred_gender === 'any' || currentParticipant.preferred_gender === newParticipant.gender;
         
-        if (isCompatible && !currentSession) {
+        if (partnerWantsMe && iWantPartner && !currentSession) {
           // Create a match!
-          try {
-            const { data: session, error: sessionError } = await supabase
-              .from('chat_sessions')
-              .insert({
-                session_type: 'text', // Default to text for now
-                status: 'matched'
-              })
-              .select()
-              .single();
-
-            if (sessionError) throw sessionError;
-
-            // Update both participants
-            await supabase
-              .from('participants')
-              .update({ 
-                session_id: session.id, 
-                is_waiting: false 
-              })
-              .in('id', [currentParticipant.id, newParticipant.id]);
-
+          const session = await createMatchedSession(currentParticipant, newParticipant, 'text');
+          
+          if (session) {
             setCurrentSession(session);
             setPartner(newParticipant);
             setIsConnected(true);
@@ -270,15 +325,9 @@ export const useChat = () => {
               title: "Connected!",
               description: `You're now chatting with ${newParticipant.name}`,
             });
-          } catch (error) {
-            console.error('Error creating match:', error);
           }
         }
       })
-      .subscribe();
-
-    const participantUpdateChannel = supabase
-      .channel('participant-updates')
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',
@@ -288,8 +337,8 @@ export const useChat = () => {
         const updatedParticipant = payload.new as Participant;
         setCurrentParticipant(updatedParticipant);
         
+        // Check if we got matched by another process
         if (updatedParticipant.session_id && !currentSession) {
-          // We got matched! Fetch session and partner
           const { data: session } = await supabase
             .from('chat_sessions')
             .select('*')
@@ -320,17 +369,16 @@ export const useChat = () => {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(newParticipantChannel);
-      supabase.removeChannel(participantUpdateChannel);
+      supabase.removeChannel(participantChannel);
     };
-  }, [currentParticipant, currentSession]);
+  }, [currentParticipant, currentSession, isConnected, createMatchedSession]);
 
-  // Set up message subscription
+  // Message subscription with better error handling
   useEffect(() => {
     if (!currentSession) return;
 
     const messageChannel = supabase
-      .channel('messages')
+      .channel(`messages-${currentSession.id}`)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
@@ -338,20 +386,32 @@ export const useChat = () => {
         filter: `session_id=eq.${currentSession.id}`
       }, (payload) => {
         const newMessage = payload.new as Message;
-        setMessages(prev => [...prev, newMessage]);
+        setMessages(prev => {
+          // Prevent duplicate messages
+          if (prev.some(msg => msg.id === newMessage.id)) {
+            return prev;
+          }
+          return [...prev, newMessage];
+        });
       })
       .subscribe();
 
     // Load existing messages
     const loadMessages = async () => {
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('session_id', currentSession.id)
-        .order('sent_at', { ascending: true });
-      
-      if (data) {
-        setMessages(data);
+      try {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('session_id', currentSession.id)
+          .order('sent_at', { ascending: true });
+        
+        if (error) throw error;
+        
+        if (data) {
+          setMessages(data);
+        }
+      } catch (error) {
+        console.error('Error loading messages:', error);
       }
     };
 
@@ -361,6 +421,22 @@ export const useChat = () => {
       supabase.removeChannel(messageChannel);
     };
   }, [currentSession]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (currentParticipant && currentParticipant.is_waiting) {
+        // Mark as no longer waiting when component unmounts
+        supabase
+          .from('participants')
+          .update({ 
+            is_waiting: false,
+            left_at: new Date().toISOString()
+          })
+          .eq('id', currentParticipant.id);
+      }
+    };
+  }, [currentParticipant]);
 
   return {
     currentSession,

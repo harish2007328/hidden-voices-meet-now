@@ -14,7 +14,113 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      chat_sessions: {
+        Row: {
+          created_at: string
+          ended_at: string | null
+          id: string
+          session_type: Database["public"]["Enums"]["chat_type"]
+          status: Database["public"]["Enums"]["session_status"]
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          ended_at?: string | null
+          id?: string
+          session_type: Database["public"]["Enums"]["chat_type"]
+          status?: Database["public"]["Enums"]["session_status"]
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          ended_at?: string | null
+          id?: string
+          session_type?: Database["public"]["Enums"]["chat_type"]
+          status?: Database["public"]["Enums"]["session_status"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      messages: {
+        Row: {
+          content: string
+          id: string
+          participant_id: string | null
+          sent_at: string
+          session_id: string | null
+        }
+        Insert: {
+          content: string
+          id?: string
+          participant_id?: string | null
+          sent_at?: string
+          session_id?: string | null
+        }
+        Update: {
+          content?: string
+          id?: string
+          participant_id?: string | null
+          sent_at?: string
+          session_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_participant_id_fkey"
+            columns: ["participant_id"]
+            isOneToOne: false
+            referencedRelation: "participants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "chat_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      participants: {
+        Row: {
+          gender: Database["public"]["Enums"]["gender_type"]
+          id: string
+          is_waiting: boolean
+          joined_at: string
+          left_at: string | null
+          name: string
+          preferred_gender: Database["public"]["Enums"]["gender_type"]
+          session_id: string | null
+        }
+        Insert: {
+          gender: Database["public"]["Enums"]["gender_type"]
+          id?: string
+          is_waiting?: boolean
+          joined_at?: string
+          left_at?: string | null
+          name: string
+          preferred_gender?: Database["public"]["Enums"]["gender_type"]
+          session_id?: string | null
+        }
+        Update: {
+          gender?: Database["public"]["Enums"]["gender_type"]
+          id?: string
+          is_waiting?: boolean
+          joined_at?: string
+          left_at?: string | null
+          name?: string
+          preferred_gender?: Database["public"]["Enums"]["gender_type"]
+          session_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "participants_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "chat_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -23,7 +129,9 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      chat_type: "text" | "audio" | "video"
+      gender_type: "male" | "female" | "any"
+      session_status: "waiting" | "matched" | "ended"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +258,10 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      chat_type: ["text", "audio", "video"],
+      gender_type: ["male", "female", "any"],
+      session_status: ["waiting", "matched", "ended"],
+    },
   },
 } as const

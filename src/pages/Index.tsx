@@ -1,13 +1,74 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from 'react';
+import { WelcomePage } from '@/components/WelcomePage';
+import { UserSetup } from '@/components/UserSetup';
+import { ChatRoom } from '@/components/ChatRoom';
+import { useChat } from '@/hooks/useChat';
+import { ChatType, GenderType } from '@/types/chat';
+
+type AppState = 'welcome' | 'setup' | 'chat';
 
 const Index = () => {
+  const [appState, setAppState] = useState<AppState>('welcome');
+  const [selectedChatType, setSelectedChatType] = useState<ChatType>('text');
+  
+  const {
+    currentSession,
+    currentParticipant,
+    partner,
+    messages,
+    isConnected,
+    isSearching,
+    startChat,
+    sendMessage,
+    skipChat,
+    stopChat
+  } = useChat();
+
+  const handleChatTypeSelect = (chatType: ChatType) => {
+    setSelectedChatType(chatType);
+    setAppState('setup');
+  };
+
+  const handleUserSetup = (name: string, gender: GenderType, preferredGender: GenderType) => {
+    setAppState('chat');
+    startChat(name, gender, preferredGender, selectedChatType);
+  };
+
+  const handleStop = () => {
+    stopChat();
+    setAppState('welcome');
+  };
+
+  const handleBack = () => {
+    setAppState('welcome');
+  };
+
+  if (appState === 'welcome') {
+    return <WelcomePage onChatTypeSelect={handleChatTypeSelect} />;
+  }
+
+  if (appState === 'setup') {
+    return (
+      <UserSetup 
+        chatType={selectedChatType}
+        onBack={handleBack}
+        onStart={handleUserSetup}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <ChatRoom
+      currentSession={currentSession}
+      currentParticipant={currentParticipant}
+      partner={partner}
+      messages={messages}
+      isConnected={isConnected}
+      isSearching={isSearching}
+      onSendMessage={sendMessage}
+      onSkip={skipChat}
+      onStop={handleStop}
+    />
   );
 };
 
